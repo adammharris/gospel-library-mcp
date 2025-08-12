@@ -8,6 +8,13 @@
 	"main": "src/index.ts",
 	"compatibility_date": "2025-03-10",
 	"compatibility_flags": ["nodejs_compat"],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "gospel-library",
+			"database_id": "f8e6958a-823d-4a00-a62a-7fd24fcde95d"
+		}
+	],
 	"migrations": [
 		{
 			"new_sqlite_classes": ["MyMCP"],
