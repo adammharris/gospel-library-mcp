@@ -27,15 +27,21 @@ export class MyMCP extends McpAgent<EnvWithDB> {
 				return MyMCP.db;
 			};
 
-			server.tool("search_scriptures", { query: z.string(), limit: z.number().min(1).max(50).optional() }, async ({ query, limit }) => {
+			server.tool("search_scriptures", { query: z.string().optional(), limit: z.number().min(1).max(50).optional() }, async ({ query, limit }) => {
 				const lim = limit ?? 10;
-				if (query.length > 200) return { content: [{ type: "text", text: "Query too long." }] };
+				// Random verse mode when no query provided.
+				if (!query || !query.trim()) {
+					const row = await getDB().prepare(`SELECT book, chapter, verse, text FROM scriptures ORDER BY RANDOM() LIMIT 1;`).first();
+					if (!row) return { content: [{ type: "text", text: "No data." }] } as any;
+					return { content: [{ type: "text", text: `${(row as any).book} ${(row as any).chapter}:${(row as any).verse}` }, { type: "text", text: (row as any).text }] } as any;
+				}
+				if (query.length > 200) return { content: [{ type: "text", text: "Query too long." }] } as any;
 				const sanitized = query.toLowerCase().replace(/[%_]/g, "");
 				const like = `%${sanitized}%`;
 				const stmt = getDB().prepare(`SELECT book, chapter, verse, substr(text, instr(lower(text), lower(?)) - 30, 160) AS snippet FROM scriptures WHERE lower(text) LIKE ? LIMIT ?;`).bind(query, like, lim);
 				const rows = (await stmt.all()).results || [];
-				if (!rows.length) return { content: [{ type: "text", text: "No results." }] };
-				return { content: rows.map((r:any)=>({ type: "text", text: `${r.book} ${r.chapter}:${r.verse} – ${r.snippet||''}` })) };
+				if (!rows.length) return { content: [{ type: "text", text: "No results." }] } as any;
+				return { content: rows.map((r:any)=>({ type: "text", text: `${r.book} ${r.chapter}:${r.verse} – ${r.snippet||''}` })) } as any;
 			});
 
 			server.tool("get_passage", { reference: z.string() }, async ({ reference }) => {
@@ -49,32 +55,84 @@ export class MyMCP extends McpAgent<EnvWithDB> {
 				return { content: [{ type: "text", text: citation }, { type: "text", text: verses.map((v:any)=>`${v.verse}. ${v.text}`).join('\n') }] };
 			});
 
-			server.tool("random_verse", {}, async () => {
-				const row = await getDB().prepare(`SELECT book, chapter, verse, text FROM scriptures ORDER BY RANDOM() LIMIT 1;`).first();
-				if (!row) return { content: [{ type: "text", text: "No data." }] };
-				return { content: [{ type: "text", text: `${(row as any).book} ${(row as any).chapter}:${(row as any).verse}` }, { type: "text", text: (row as any).text }] };
-			});
 
-			server.tool("search_conference", { query: z.string(), limit: z.number().min(1).max(50).optional(), speaker: z.string().optional(), conference: z.string().optional(), from: z.string().optional(), to: z.string().optional() }, async ({ query, limit, speaker, conference, from, to }) => {
+			// Unified conference talks tool
+			server.tool("talks", {
+				id: z.number().int().positive().optional(),
+				query: z.string().optional(),
+				speaker: z.string().optional(),
+				conference: z.string().optional(),
+				title: z.string().optional(),
+				list: z.enum(["conferences","speakers"]).optional(),
+				limit: z.number().min(1).max(100).optional(),
+				full: z.boolean().optional()
+			}, async ({ id, query, speaker, conference, title, list, limit, full }) => {
 				const lim = limit ?? 10;
-				let filter = ""; const binds: any[] = [];
-				if (speaker) { filter += " AND speaker = ?"; binds.push(speaker); }
-				if (conference) { filter += " AND conference = ?"; binds.push(conference); }
-				if (from) { filter += " AND date >= ?"; binds.push(from); }
-				if (to) { filter += " AND date <= ?"; binds.push(to); }
-				const sanitized = query.toLowerCase().replace(/[%_]/g, "");
-				const like = `%${sanitized}%`;
-				const stmt = getDB().prepare(`SELECT id, speaker, title, conference, date, substr(full_text, instr(lower(full_text), lower(?)) - 40, 200) AS snippet FROM conference_talks WHERE lower(full_text) LIKE ? ${filter} ORDER BY date DESC LIMIT ?;`).bind(query, like, ...binds, lim);
-				const rows = (await stmt.all()).results || [];
-				if (!rows.length) return { content: [{ type: "text", text: "No results." }] };
-				return { content: rows.map((r:any)=>({ type:"text", text:`${r.speaker} – ${r.title} (${r.date}) ${r.snippet||''}` })) };
+				// Listing modes
+				if (list === "conferences") {
+					const res = await getDB().prepare(`SELECT conference, substr(MIN(date),1,7) AS month, COUNT(*) AS talks FROM conference_talks GROUP BY conference ORDER BY MIN(date) DESC LIMIT ?;`).bind(lim).all();
+					const rows = res.results || [];
+					return { content: rows.map((r:any)=>({ type:"text", text:`${r.conference} (${r.month}) – ${r.talks} talks` })) } as any;
+				}
+				if (list === "speakers") {
+					let sql = `SELECT speaker, COUNT(*) AS talks FROM conference_talks`;
+					const binds:any[] = [];
+					if (conference) { sql += ` WHERE conference LIKE ?`; binds.push(`%${conference.trim()}%`); }
+					sql += ` GROUP BY speaker ORDER BY talks DESC, speaker ASC LIMIT ?;`;
+					binds.push(lim);
+					const res = await getDB().prepare(sql).bind(...binds).all();
+					const rows = res.results || [];
+					return { content: rows.map((r:any)=>({ type:"text", text:`${r.speaker} (${r.talks})` })) } as any;
+				}
+				// Get by id
+				if (id) {
+					const row = await getDB().prepare(`SELECT id, speaker, title, conference, date, ${full?"full_text":"substr(full_text,1,1500) AS excerpt"} FROM conference_talks WHERE id=?;`).bind(id).first();
+					if (!row) return { content: [{ type:"text", text:"Talk not found." }] } as any;
+					const body = full ? (row as any).full_text : (row as any).excerpt;
+					return { content: [
+						{ type:"text", text:`${(row as any).speaker} – ${(row as any).title} (${(row as any).conference}, ${(row as any).date})${full?" (full)":""}` },
+						{ type:"text", text: body }
+					] } as any;
+				}
+				// Search (full-text) if query provided
+				if (query) {
+					let filter = ""; const binds:any[] = [];
+					if (speaker) { filter += " AND speaker = ?"; binds.push(speaker); }
+					if (conference) { filter += " AND conference LIKE ?"; binds.push(`%${conference.trim()}%`); }
+					const sanitized = query.toLowerCase().replace(/[%_]/g, "");
+					const like = `%${sanitized}%`;
+					const stmt = getDB().prepare(`SELECT id, speaker, title, conference, date, substr(full_text, instr(lower(full_text), lower(?)) - 40, 200) AS snippet FROM conference_talks WHERE lower(full_text) LIKE ? ${filter} ORDER BY date DESC LIMIT ?;`).bind(query, like, ...binds, lim);
+					const rows = (await stmt.all()).results || [];
+					if (!rows.length) return { content: [{ type:"text", text:"No results. Try adjusting speaker/conference or list available conferences with talks{list:'conferences'}." }] } as any;
+					return { content: rows.map((r:any)=>({ type:"text", text:`#${r.id} ${r.speaker} – ${r.title} (${r.conference} ${r.date}) ${r.snippet||''}` })) } as any;
+				}
+				// Structured filter (no query)
+				if (speaker || conference || title) {
+					let sql = `SELECT id, speaker, title, conference, date FROM conference_talks WHERE 1=1`;
+					const binds:any[] = [];
+					if (speaker) { sql += ` AND speaker = ?`; binds.push(speaker); }
+					if (conference) { sql += ` AND conference LIKE ?`; binds.push(`%${conference.trim()}%`); }
+					if (title) { sql += ` AND lower(title) LIKE ?`; binds.push(`%${title.toLowerCase()}%`); }
+					sql += ` ORDER BY date LIMIT ?`; binds.push(lim);
+					const res = await getDB().prepare(sql).bind(...binds).all();
+					const rows = res.results || [];
+					if (!rows.length) return { content: [{ type:"text", text:"No talks matched filters. Consider adding query for content search or list conferences." }] } as any;
+					return { content: rows.map((r:any)=>({ type:"text", text:`#${r.id} ${r.date} – ${r.speaker}: ${r.title} (${r.conference})` })) } as any;
+				}
+				return { content: [{ type:"text", text:"Specify id to fetch a talk, query for full-text search, filters (speaker/conference/title), or list ('conferences'|'speakers')." }] } as any;
 			});
 
-			server.tool("get_talk", { id: z.number() }, async ({ id }) => {
-				const row = await getDB().prepare(`SELECT id, speaker, title, conference, date, substr(full_text,1,1500) AS excerpt FROM conference_talks WHERE id=?;`).bind(id).first();
-				if (!row) return { content: [{ type: "text", text: "Talk not found." }] };
-				return { content: [{ type: "text", text: `${(row as any).speaker} – ${(row as any).title} (${(row as any).conference}, ${(row as any).date})` }, { type: "text", text: (row as any).excerpt }] };
+			// Deprecated wrappers -> point to talks tool
+			const deprecated = (name:string) => `DEPRECATED: use talks tool. See talks schema. (Called via ${name})`;
+			server.tool("search_conference", { query: z.string(), limit: z.number().min(1).max(50).optional(), speaker: z.string().optional(), conference: z.string().optional() }, async ({ query, limit, speaker, conference }) => {
+				return { content: [{ type:"text", text: deprecated("search_conference") } , { type:"text", text:"Forwarding request..." } ] } as any;
 			});
+			server.tool("get_talk", { id: z.number().int().positive() }, async ({ id }) => {
+				return { content: [{ type:"text", text: deprecated("get_talk") }, { type:"text", text:`Call talks with { id: ${id}, full: true } for full text or omit full for excerpt.` }] } as any;
+			});
+			server.tool("list_conferences", {}, async () => ({ content: [{ type:"text", text: deprecated("list_conferences") }, { type:"text", text:"Use talks{list:'conferences'}" }] }) as any);
+			server.tool("list_speakers", { conference: z.string().optional() }, async ({ conference }) => ({ content: [{ type:"text", text: deprecated("list_speakers") }, { type:"text", text:`Use talks{list:'speakers'${conference?`, conference:'${conference}'`:''}}` }] }) as any);
+			server.tool("find_talks", { speaker: z.string().optional(), conference: z.string().optional(), title: z.string().optional() }, async ({ speaker, conference, title }) => ({ content: [{ type:"text", text: deprecated("find_talks") }, { type:"text", text:`Use talks with filters: ${JSON.stringify({ speaker, conference, title })}` }] }) as any);
 
 			MyMCP.sharedServer = server;
 		}
