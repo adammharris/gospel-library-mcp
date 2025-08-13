@@ -1,50 +1,97 @@
-# Building a Remote MCP Server on Cloudflare (Without Auth)
+## Gospel Library MCP Server
 
-This example allows you to deploy a remote MCP server that doesn't require authentication on Cloudflare Workers. 
+Remote Model Context Protocol server running on Cloudflare Workers + D1 that exposes scriptures and General Conference talks.
 
-## Get started: 
+### Deployment URL
+Your worker exposes an SSE endpoint at: `https://<your-worker>.<your-account>.workers.dev/sse`
 
-[![Deploy to Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/cloudflare/ai/tree/main/demos/remote-mcp-authless)
+### Tools Overview
 
-This will deploy your MCP server to a URL like: `remote-mcp-server-authless.<your-account>.workers.dev/sse`
+Current active tools:
 
-Alternatively, you can use the command line below to get the remote MCP Server created on your local machine:
+1. search_scriptures
+   - query (optional string): Substring to search scripture text (case-insensitive). If omitted or blank, returns a random verse.
+   - limit (optional number, default 10): Max verses/snippets.
+   Response: Verse references with surrounding snippet or a random verse + text.
+
+2. get_passage
+   - reference (string): Standard scripture citation (e.g. "John 3:16" or "Alma 32:21-23").
+   Response: Citation line and numbered verses.
+
+3. talks (unified conference talk interface)
+   Parameters (all optional unless noted):
+   - id (number): Fetch a specific talk (excerpt by default, full body if full=true).
+   - full (boolean): When id is provided, include entire talk text.
+   - query (string): Full‑text search across talk body; returns snippets.
+   - speaker (string): Exact speaker match (combined with query or filters).
+   - conference (string): Substring match on conference name (e.g. "October 1990").
+   - title (string): Substring match on title (filter mode only; ignored in listing modes).
+   - list ("conferences" | "speakers"): Listing mode for discovery. When list="speakers" you can also pass conference to scope it.
+   - limit (number): Max rows (default 10, up to 100).
+
+   Behavior priority (first matching applies):
+   1. list mode (conferences or speakers)
+   2. id (with optional full)
+   3. query full‑text search (may also apply speaker / conference filters)
+   4. Structured filters (speaker/conference/title) without query
+   5. Fallback guidance message
+
+### Typical Query Flows
+
+Find a Russell M. Nelson talk in October 1990:
+1. talks{ list: "conferences", limit: 20 }  // discover conference naming
+2. talks{ speaker: "Russell M. Nelson", conference: "October 1990" }
+3. talks{ id: <returned id>, full: true }
+
+Search for a theme across talks:
+talks{ query: "atonement", speaker: "Russell M. Nelson", limit: 5 }
+
+List top speakers:
+talks{ list: "speakers", limit: 30 }
+
+Random scripture:
+search_scriptures{}  // no query
+
+Get a passage range:
+get_passage{ reference: "Moroni 10:3-5" }
+
+### Error / Guidance Messages
+The tools return actionable hints (e.g. suggesting list modes) when filters yield zero results.
+
+### Local Development
+
+Type check:
 ```bash
-npm create cloudflare@latest -- my-mcp-server --template=cloudflare/ai/demos/remote-mcp-authless
+bun run type-check
 ```
 
-## Customizing your MCP Server
+Deploy:
+```bash
+wrangler deploy
+```
 
-To add your own [tools](https://developers.cloudflare.com/agents/model-context-protocol/tools/) to the MCP server, define each tool inside the `init()` method of `src/index.ts` using `this.server.tool(...)`. 
+Tail logs:
+```bash
+wrangler tail
+```
 
-## Connect to Cloudflare AI Playground
-
-You can connect to your MCP server from the Cloudflare AI Playground, which is a remote MCP client:
-
-1. Go to https://playground.ai.cloudflare.com/
-2. Enter your deployed MCP server URL (`remote-mcp-server-authless.<your-account>.workers.dev/sse`)
-3. You can now use your MCP tools directly from the playground!
-
-## Connect Claude Desktop to your MCP server
-
-You can also connect to your remote MCP server from local MCP clients, by using the [mcp-remote proxy](https://www.npmjs.com/package/mcp-remote). 
-
-To connect to your MCP server from Claude Desktop, follow [Anthropic's Quickstart](https://modelcontextprotocol.io/quickstart/user) and within Claude Desktop go to Settings > Developer > Edit Config.
-
-Update with this configuration:
-
+### Connecting a Client (Claude Desktop via mcp-remote)
+Example config snippet:
 ```json
 {
   "mcpServers": {
-    "calculator": {
+    "gospel-library": {
       "command": "npx",
-      "args": [
-        "mcp-remote",
-        "http://localhost:8787/sse"  // or remote-mcp-server-authless.your-account.workers.dev/sse
-      ]
+      "args": ["mcp-remote", "https://<your-worker>.<acct>.workers.dev/sse"]
     }
   }
 }
 ```
 
-Restart Claude and you should see the tools become available. 
+### Future Enhancements (Ideas)
+* Ranking improvements or FTS.
+* Citation generation referencing talk paragraphs.
+* Caching of frequent queries.
+
+---
+All former conference helper tools were consolidated into the single `talks` tool.

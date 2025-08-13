@@ -122,17 +122,7 @@ export class MyMCP extends McpAgent<EnvWithDB> {
 				return { content: [{ type:"text", text:"Specify id to fetch a talk, query for full-text search, filters (speaker/conference/title), or list ('conferences'|'speakers')." }] } as any;
 			});
 
-			// Deprecated wrappers -> point to talks tool
-			const deprecated = (name:string) => `DEPRECATED: use talks tool. See talks schema. (Called via ${name})`;
-			server.tool("search_conference", { query: z.string(), limit: z.number().min(1).max(50).optional(), speaker: z.string().optional(), conference: z.string().optional() }, async ({ query, limit, speaker, conference }) => {
-				return { content: [{ type:"text", text: deprecated("search_conference") } , { type:"text", text:"Forwarding request..." } ] } as any;
-			});
-			server.tool("get_talk", { id: z.number().int().positive() }, async ({ id }) => {
-				return { content: [{ type:"text", text: deprecated("get_talk") }, { type:"text", text:`Call talks with { id: ${id}, full: true } for full text or omit full for excerpt.` }] } as any;
-			});
-			server.tool("list_conferences", {}, async () => ({ content: [{ type:"text", text: deprecated("list_conferences") }, { type:"text", text:"Use talks{list:'conferences'}" }] }) as any);
-			server.tool("list_speakers", { conference: z.string().optional() }, async ({ conference }) => ({ content: [{ type:"text", text: deprecated("list_speakers") }, { type:"text", text:`Use talks{list:'speakers'${conference?`, conference:'${conference}'`:''}}` }] }) as any);
-			server.tool("find_talks", { speaker: z.string().optional(), conference: z.string().optional(), title: z.string().optional() }, async ({ speaker, conference, title }) => ({ content: [{ type:"text", text: deprecated("find_talks") }, { type:"text", text:`Use talks with filters: ${JSON.stringify({ speaker, conference, title })}` }] }) as any);
+			// (Deprecated conference tools removed; replaced entirely by talks tool.)
 
 			MyMCP.sharedServer = server;
 		}
