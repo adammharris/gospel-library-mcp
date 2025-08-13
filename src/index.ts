@@ -65,24 +65,53 @@ export class MyMCP extends McpAgent<EnvWithDB> {
 				title: z.string().optional(),
 				list: z.enum(["conferences","speakers"]).optional(),
 				limit: z.number().min(1).max(100).optional(),
+				offset: z.number().int().min(0).optional(),
 				full: z.boolean().optional()
-			}, async ({ id, query, speaker, conference, title, list, limit, full }) => {
+			}, async ({ id, query, speaker, conference, title, list, limit, offset, full }) => {
 				const lim = limit ?? 10;
+				const off = offset ?? 0;
+				const confPatterns = (raw?:string): string[] => {
+					if (!raw) return [];
+					const base = raw.trim();
+					const patterns = new Set<string>();
+					patterns.add(base);
+					// If user gives YYYY-MM, derive Month Year (English months assumed)
+					const ym = base.match(/^(\d{4})[-/](\d{2})$/);
+					if (ym) {
+						const monthNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+						const mName = monthNames[parseInt(ym[2],10)-1];
+						patterns.add(`${mName} ${ym[1]}`);
+					}
+					// Add 'General Conference' suffix variants
+					for (const p of Array.from(patterns)) {
+						patterns.add(`${p} General Conference`);
+					}
+					return Array.from(patterns);
+				};
 				// Listing modes
 				if (list === "conferences") {
-					const res = await getDB().prepare(`SELECT conference, substr(MIN(date),1,7) AS month, COUNT(*) AS talks FROM conference_talks GROUP BY conference ORDER BY MIN(date) DESC LIMIT ?;`).bind(lim).all();
+					const meta = await getDB().prepare(`SELECT MIN(substr(date,1,7)) AS first_month, MAX(substr(date,1,7)) AS last_month, COUNT(DISTINCT conference) AS total FROM conference_talks;`).first();
+					const res = await getDB().prepare(`SELECT conference, substr(MIN(date),1,7) AS month, COUNT(*) AS talks FROM conference_talks GROUP BY conference ORDER BY MIN(date) DESC LIMIT ? OFFSET ?;`).bind(lim, off).all();
 					const rows = res.results || [];
-					return { content: rows.map((r:any)=>({ type:"text", text:`${r.conference} (${r.month}) – ${r.talks} talks` })) } as any;
+					return { content: [
+						{ type:"text", text:`Conference range: ${(meta as any).first_month} .. ${(meta as any).last_month} (total ${(meta as any).total} conferences). Showing ${rows.length} starting at offset ${off}. Use limit & offset to page older conferences.` },
+						...rows.map((r:any)=>({ type:"text", text:`${r.conference} (${r.month}) – ${r.talks} talks` }))
+					] } as any;
 				}
 				if (list === "speakers") {
 					let sql = `SELECT speaker, COUNT(*) AS talks FROM conference_talks`;
 					const binds:any[] = [];
 					if (conference) { sql += ` WHERE conference LIKE ?`; binds.push(`%${conference.trim()}%`); }
-					sql += ` GROUP BY speaker ORDER BY talks DESC, speaker ASC LIMIT ?;`;
-					binds.push(lim);
+					sql += ` GROUP BY speaker ORDER BY talks DESC, speaker ASC LIMIT ? OFFSET ?;`;
+					binds.push(lim, off);
+					const metaSql = `SELECT COUNT(DISTINCT speaker) AS total FROM conference_talks${conference?" WHERE conference LIKE ?":""}`;
+					const metaRow = await getDB().prepare(metaSql).bind(...(conference? [`%${conference.trim()}%`]:[])).first();
 					const res = await getDB().prepare(sql).bind(...binds).all();
 					const rows = res.results || [];
-					return { content: rows.map((r:any)=>({ type:"text", text:`${r.speaker} (${r.talks})` })) } as any;
+					return { content: [
+						{ type:"text", text:`Speakers total: ${(metaRow as any).total}${conference?` (filtered by '${conference}')`:''}. Showing ${rows.length} starting at offset ${off}.` },
+						...rows.map((r:any)=>({ type:"text", text:`${r.speaker} (${r.talks})` }))
+					] } as any;
 				}
 				// Get by id
 				if (id) {
@@ -108,15 +137,32 @@ export class MyMCP extends McpAgent<EnvWithDB> {
 				}
 				// Structured filter (no query)
 				if (speaker || conference || title) {
-					let sql = `SELECT id, speaker, title, conference, date FROM conference_talks WHERE 1=1`;
-					const binds:any[] = [];
-					if (speaker) { sql += ` AND speaker = ?`; binds.push(speaker); }
-					if (conference) { sql += ` AND conference LIKE ?`; binds.push(`%${conference.trim()}%`); }
-					if (title) { sql += ` AND lower(title) LIKE ?`; binds.push(`%${title.toLowerCase()}%`); }
-					sql += ` ORDER BY date LIMIT ?`; binds.push(lim);
-					const res = await getDB().prepare(sql).bind(...binds).all();
-					const rows = res.results || [];
-					if (!rows.length) return { content: [{ type:"text", text:"No talks matched filters. Consider adding query for content search or list conferences." }] } as any;
+					// Attempt multiple conference pattern variants until match.
+					let rows:any[] = [];
+					const confsToTry = conference ? confPatterns(conference) : [undefined];
+					for (const c of confsToTry) {
+						let sql = `SELECT id, speaker, title, conference, date FROM conference_talks WHERE 1=1`;
+						const binds:any[] = [];
+						if (speaker) { sql += ` AND speaker = ?`; binds.push(speaker); }
+						if (c) { sql += ` AND conference LIKE ?`; binds.push(`%${c}%`); }
+						if (title) { sql += ` AND lower(title) LIKE ?`; binds.push(`%${title.toLowerCase()}%`); }
+						sql += ` ORDER BY date LIMIT ?`; binds.push(lim);
+						const res = await getDB().prepare(sql).bind(...binds).all();
+						rows = res.results || [];
+						if (rows.length) break;
+					}
+					if (!rows.length) return { content: [{ type:"text", text:"No talks matched filters (after trying pattern variants). Consider adding query for content search or list conferences." }] } as any;
+					if (rows.length === 1) {
+						// Auto-expand single match
+						const idSingle = rows[0].id;
+						const row = await getDB().prepare(`SELECT id, speaker, title, conference, date, ${full?"full_text":"substr(full_text,1,1500) AS excerpt"} FROM conference_talks WHERE id=?;`).bind(idSingle).first();
+						if (!row) return { content: [{ type:"text", text:"Unexpected: talk disappeared." }] } as any;
+						const body = full ? (row as any).full_text : (row as any).excerpt;
+						return { content: [
+							{ type:"text", text:`${(row as any).speaker} – ${(row as any).title} (${(row as any).conference}, ${(row as any).date})${full?" (full)":""}` },
+							{ type:"text", text: body }
+						] } as any;
+					}
 					return { content: rows.map((r:any)=>({ type:"text", text:`#${r.id} ${r.date} – ${r.speaker}: ${r.title} (${r.conference})` })) } as any;
 				}
 				return { content: [{ type:"text", text:"Specify id to fetch a talk, query for full-text search, filters (speaker/conference/title), or list ('conferences'|'speakers')." }] } as any;

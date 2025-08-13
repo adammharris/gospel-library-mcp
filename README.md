@@ -27,7 +27,10 @@ Current active tools:
    - conference (string): Substring match on conference name (e.g. "October 1990").
    - title (string): Substring match on title (filter mode only; ignored in listing modes).
    - list ("conferences" | "speakers"): Listing mode for discovery. When list="speakers" you can also pass conference to scope it.
-   - limit (number): Max rows (default 10, up to 100).
+  - limit (number): Max rows (default 10, up to 100).
+  - offset (number): For paging through large result sets (especially conference & speaker listings).
+
+  Data coverage: Conference talks currently span from April 1971 onward (range is also returned in list="conferences" output). If you only see recent years, increase offset to page further back.
 
    Behavior priority (first matching applies):
    1. list mode (conferences or speakers)
@@ -46,8 +49,11 @@ Find a Russell M. Nelson talk in October 1990:
 Search for a theme across talks:
 talks{ query: "atonement", speaker: "Russell M. Nelson", limit: 5 }
 
-List top speakers:
+List top speakers (first page):
 talks{ list: "speakers", limit: 30 }
+
+Page older conferences (second page of 10):
+talks{ list: "conferences", limit: 10, offset: 10 }
 
 Random scripture:
 search_scriptures{}  // no query
