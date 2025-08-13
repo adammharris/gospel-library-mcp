@@ -88,6 +88,19 @@ export class MyMCP extends McpAgent<EnvWithDB> {
 					}
 					return Array.from(patterns);
 				};
+				const speakerPatterns = (raw?:string): string[] => {
+					if (!raw) return [];
+					let base = raw.trim();
+					base = base.replace(/^(Elder|President|Brother|Sister)\s+/i, "");
+					const variants = new Set<string>();
+					variants.add(base);
+					variants.add(base.replace(/\./g, ""));
+					variants.add(`Elder ${base}`);
+					variants.add(`President ${base}`);
+					const parts = base.split(/\s+/);
+					if (parts.length > 1) variants.add(parts[parts.length-1]);
+					return Array.from(variants);
+				};
 				// Listing modes
 				if (list === "conferences") {
 					const meta = await getDB().prepare(`SELECT MIN(substr(date,1,7)) AS first_month, MAX(substr(date,1,7)) AS last_month, COUNT(DISTINCT conference) AS total FROM conference_talks;`).first();
@@ -126,7 +139,13 @@ export class MyMCP extends McpAgent<EnvWithDB> {
 				// Search (full-text) if query provided
 				if (query) {
 					let filter = ""; const binds:any[] = [];
-					if (speaker) { filter += " AND speaker = ?"; binds.push(speaker); }
+					if (speaker) {
+						const sp = speakerPatterns(speaker);
+						if (sp.length) {
+							filter += " AND (" + sp.map(()=>"speaker LIKE ?").join(" OR ") + ")";
+							for (const v of sp) binds.push(`%${v}%`);
+						}
+					}
 					if (conference) { filter += " AND conference LIKE ?"; binds.push(`%${conference.trim()}%`); }
 					const sanitized = query.toLowerCase().replace(/[%_]/g, "");
 					const like = `%${sanitized}%`;
@@ -140,10 +159,14 @@ export class MyMCP extends McpAgent<EnvWithDB> {
 					// Attempt multiple conference pattern variants until match.
 					let rows:any[] = [];
 					const confsToTry = conference ? confPatterns(conference) : [undefined];
+					const speakerVars = speakerPatterns(speaker);
 					for (const c of confsToTry) {
 						let sql = `SELECT id, speaker, title, conference, date FROM conference_talks WHERE 1=1`;
 						const binds:any[] = [];
-						if (speaker) { sql += ` AND speaker = ?`; binds.push(speaker); }
+						if (speaker && speakerVars.length) {
+							sql += " AND (" + speakerVars.map(()=>"speaker LIKE ?").join(" OR ") + ")";
+							for (const v of speakerVars) binds.push(`%${v}%`);
+						}
 						if (c) { sql += ` AND conference LIKE ?`; binds.push(`%${c}%`); }
 						if (title) { sql += ` AND lower(title) LIKE ?`; binds.push(`%${title.toLowerCase()}%`); }
 						sql += ` ORDER BY date LIMIT ?`; binds.push(lim);
