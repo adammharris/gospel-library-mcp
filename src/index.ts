@@ -149,10 +149,17 @@ export class MyMCP extends McpAgent<EnvWithDB> {
 					if (conference) { filter += " AND conference LIKE ?"; binds.push(`%${conference.trim()}%`); }
 					const sanitized = query.toLowerCase().replace(/[%_]/g, "");
 					const like = `%${sanitized}%`;
-					const stmt = getDB().prepare(`SELECT id, speaker, title, conference, date, substr(full_text, instr(lower(full_text), lower(?)) - 40, 200) AS snippet FROM conference_talks WHERE lower(full_text) LIKE ? ${filter} ORDER BY date DESC LIMIT ?;`).bind(query, like, ...binds, lim);
+					const stmt = getDB().prepare(`SELECT id, speaker, title, conference, date FROM conference_talks WHERE lower(full_text) LIKE ? ${filter} ORDER BY date DESC LIMIT ?;`).bind(like, ...binds, lim);
 					const rows = (await stmt.all()).results || [];
 					if (!rows.length) return { content: [{ type:"text", text:"No results. Try adjusting speaker/conference or list available conferences with talks{list:'conferences'}." }] } as any;
-					return { content: rows.map((r:any)=>({ type:"text", text:`#${r.id} ${r.speaker} – ${r.title} (${r.conference} ${r.date}) ${r.snippet||''}` })) } as any;
+					if (rows.length === 1) {
+						const fullRow = await getDB().prepare(`SELECT id, speaker, title, conference, date, full_text FROM conference_talks WHERE id=?;`).bind(rows[0].id).first();
+						return { content: [
+							{ type:"text", text:`${(fullRow as any).speaker} – ${(fullRow as any).title} (${(fullRow as any).conference}, ${(fullRow as any).date}) (full)` },
+							{ type:"text", text:(fullRow as any).full_text }
+						] } as any;
+					}
+					return { content: rows.map((r:any)=>({ type:"text", text:`#${r.id} ${r.speaker} – ${r.title} (${r.conference} ${r.date})` })) } as any;
 				}
 				// Structured filter (no query)
 				if (speaker || conference || title) {
@@ -176,14 +183,12 @@ export class MyMCP extends McpAgent<EnvWithDB> {
 					}
 					if (!rows.length) return { content: [{ type:"text", text:"No talks matched filters (after trying pattern variants). Consider adding query for content search or list conferences." }] } as any;
 					if (rows.length === 1) {
-						// Auto-expand single match
 						const idSingle = rows[0].id;
-						const row = await getDB().prepare(`SELECT id, speaker, title, conference, date, ${full?"full_text":"substr(full_text,1,1500) AS excerpt"} FROM conference_talks WHERE id=?;`).bind(idSingle).first();
+						const row = await getDB().prepare(`SELECT id, speaker, title, conference, date, full_text FROM conference_talks WHERE id=?;`).bind(idSingle).first();
 						if (!row) return { content: [{ type:"text", text:"Unexpected: talk disappeared." }] } as any;
-						const body = full ? (row as any).full_text : (row as any).excerpt;
 						return { content: [
-							{ type:"text", text:`${(row as any).speaker} – ${(row as any).title} (${(row as any).conference}, ${(row as any).date})${full?" (full)":""}` },
-							{ type:"text", text: body }
+							{ type:"text", text:`${(row as any).speaker} – ${(row as any).title} (${(row as any).conference}, ${(row as any).date}) (full)` },
+							{ type:"text", text:(row as any).full_text }
 						] } as any;
 					}
 					return { content: rows.map((r:any)=>({ type:"text", text:`#${r.id} ${r.date} – ${r.speaker}: ${r.title} (${r.conference})` })) } as any;
