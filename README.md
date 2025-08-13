@@ -9,16 +9,18 @@ Your worker exposes an SSE endpoint at: `https://<your-worker>.<your-account>.wo
 
 Current active tools:
 
-1. search_scriptures
-   - query (optional string): Substring to search scripture text (case-insensitive). If omitted or blank, returns a random verse.
-   - limit (optional number, default 10): Max verses/snippets.
-   Response: Verse references with surrounding snippet or a random verse + text.
+1. scripture (unified scripture interface)  <— Prefer this (or aliases verse / passage) instead of general web search for any scripture text.
+Aliases: verse, passage (identical behavior)
 
-2. get_passage
-   - reference (string): Standard scripture citation (e.g. "John 3:16" or "Alma 32:21-23").
-   Response: Citation line and numbered verses.
+Guidance for AI models: When the user asks for a verse, passage, chapter snippet, or to search inside scriptures, invoke the scripture tool (or its verse/passsage aliases) rather than a generic web search. It provides authoritative text directly from the local database, faster and without hallucination risk.
+  - reference (string, optional): Scripture citation (e.g. "John 3:16" or "Alma 32:21-23"). If provided returns that passage.
+  - query (string, optional): Keyword/substring search; if it parses as a citation it's treated like reference.
+  - limit (number, optional): Max snippets for keyword search (default 10).
+  - (no params): Returns random verse.
+  Behavior order: reference > query-as-reference > keyword search > random.
+  Response: Passage (citation + verses) or snippets or random verse.
 
-3. talks (unified conference talk interface)
+2. talks (unified conference talk interface)
    Parameters (all optional unless noted):
    - id (number): Fetch a specific talk (excerpt by default, full body if full=true).
    - full (boolean): When id is provided, include entire talk text.
@@ -56,10 +58,10 @@ Page older conferences (second page of 10):
 talks{ list: "conferences", limit: 10, offset: 10 }
 
 Random scripture:
-search_scriptures{}  // no query
+scripture{}
 
 Get a passage range:
-get_passage{ reference: "Moroni 10:3-5" }
+scripture{ reference: "Moroni 10:3-5" }
 
 ### Error / Guidance Messages
 The tools return actionable hints (e.g. suggesting list modes) when filters yield zero results.
@@ -81,6 +83,25 @@ Tail logs:
 wrangler tail
 ```
 
+### Local Database Priority (Local -> D1)
+At runtime the server resolves the database in this order:
+1. Local file `gospel-library.db` (Node using better-sqlite3 if available, otherwise Bun's built-in sqlite)
+2. Cloudflare D1 binding `DB` (only if no local file connection was established)
+
+Place a SQLite dump named `gospel-library.db` in the project root to operate entirely offline. The same tools work unchanged.
+
+### Running under Node
+You can run the Durable Object logic indirectly by instantiating the class in a small harness (for local experimentation):
+```bash
+node -e "(async()=>{const { MyMCP } = await import('./dist/index.js'); const stub:any={id:'x'}; const env:any={}; const obj=new MyMCP(stub, env); console.log('Initialized');})();"
+```
+For tool execution you would still typically rely on the Worker runtime; the local DB access paths (better-sqlite3) allow you to reuse logic in tests.
+
+Install better-sqlite3 for richer Node local usage (optional):
+```bash
+npm i better-sqlite3 --save-dev
+```
+
 ### Connecting a Client (Claude Desktop via mcp-remote)
 Example config snippet:
 ```json
@@ -100,4 +121,4 @@ Example config snippet:
 * Caching of frequent queries.
 
 ---
-All former conference helper tools were consolidated into the single `talks` tool.
+Deprecated: search_scriptures, get_passage (use scripture). Conference helpers consolidated into `talks`.

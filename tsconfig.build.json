@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+  "module": "NodeNext",
+  "target": "es2021",
+  "moduleResolution": "nodenext",
+    "declaration": false,
+    "sourceMap": false,
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.ts", "build-cloudflare-stubs.d.ts"]
+}

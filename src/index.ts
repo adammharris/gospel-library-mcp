@@ -1,8 +1,12 @@
 import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { z } from "zod";
+import { registerAllTools } from "./shared-tools.js";
+// Node fallback: declare require if not typed
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+declare var require: any;
 
-interface EnvWithDB extends Env { DB: D1Database }
+// DB binding is present in Cloudflare; for local dev we fallback to a sqlite file if missing.
+interface EnvWithDB extends Env { DB?: D1Database }
 
 export class MyMCP extends McpAgent<EnvWithDB> {
 	// Shared server and DB across instances
@@ -15,189 +19,15 @@ export class MyMCP extends McpAgent<EnvWithDB> {
 		super(state, env);
 		if (!MyMCP.sharedServer) {
 			const server = new McpServer({ name: "gospel-library", version: "0.1.0" });
-			if (!MyMCP.db) MyMCP.db = env.DB;
-			// Reference parsing helpers
-			const dashNorm = (s: string) => s.replace(/[\u2012-\u2015\u2212]/g, "-").trim();
-			const bookMap: Record<string,string> = {"gen":"Genesis","jn":"John","john":"John","alma":"Alma","d&c":"Doctrine and Covenants","dc":"Doctrine and Covenants","doctrine and covenants":"Doctrine and Covenants","moroni":"Moroni","mosiah":"Mosiah","3 nephi":"3 Nephi","2 nephi":"2 Nephi","1 nephi":"1 Nephi","helaman":"Helaman"};
-			const refRegex = /^\s*([1-3]?\s?[A-Za-z&\. ]+?)\s+(\d+):(\d+)(?:-(\d+))?\s*$/;
-			const normalizeBook = (raw:string) => { const k=raw.toLowerCase().replace(/\./g,"").replace(/\s+/g," ").trim(); return bookMap[k]||raw.replace(/\s+/g," ").trim(); };
-			const parseReference = (input:string) => { const m=dashNorm(input).match(refRegex); if(!m) return null; const book=normalizeBook(m[1]); if(!book) return null; const chapter=+m[2]; const verseStart=+m[3]; const verseEnd=m[4]?+m[4]:verseStart; if(verseEnd<verseStart) return null; return {book,chapter,verseStart,verseEnd}; };
-			const getDB = () => {
-				if (!MyMCP.db) throw new Error("DB not initialized");
-				return MyMCP.db;
-			};
-
-			server.tool("search_scriptures", { query: z.string().optional(), limit: z.number().min(1).max(50).optional() }, async ({ query, limit }) => {
-				const lim = limit ?? 10;
-				// Random verse mode when no query provided.
-				if (!query || !query.trim()) {
-					const row = await getDB().prepare(`SELECT book, chapter, verse, text FROM scriptures ORDER BY RANDOM() LIMIT 1;`).first();
-					if (!row) return { content: [{ type: "text", text: "No data." }] } as any;
-					return { content: [{ type: "text", text: `${(row as any).book} ${(row as any).chapter}:${(row as any).verse}` }, { type: "text", text: (row as any).text }] } as any;
+			registerAllTools(server, {
+				ensureDb: async () => {
+					if (!MyMCP.db) { await ensureLocalDB(); if (!MyMCP.db && env.DB) MyMCP.db = env.DB; }
+				},
+				getDB: () => {
+					if (!MyMCP.db) throw new Error("DB not initialized (no D1 binding and local sqlite not loaded)");
+					return MyMCP.db;
 				}
-				if (query.length > 200) return { content: [{ type: "text", text: "Query too long." }] } as any;
-				const sanitized = query.toLowerCase().replace(/[%_]/g, "");
-				const like = `%${sanitized}%`;
-				const stmt = getDB().prepare(`SELECT book, chapter, verse, substr(text, instr(lower(text), lower(?)) - 30, 160) AS snippet FROM scriptures WHERE lower(text) LIKE ? LIMIT ?;`).bind(query, like, lim);
-				const rows = (await stmt.all()).results || [];
-				if (!rows.length) return { content: [{ type: "text", text: "No results." }] } as any;
-				return { content: rows.map((r:any)=>({ type: "text", text: `${r.book} ${r.chapter}:${r.verse} – ${r.snippet||''}` })) } as any;
 			});
-
-			server.tool("get_passage", { reference: z.string() }, async ({ reference }) => {
-				const parsed = parseReference(reference);
-				if (!parsed) return { content: [{ type: "text", text: "Invalid reference." }] };
-				if (parsed.verseEnd - parsed.verseStart > 150) return { content: [{ type: "text", text: "Range too large." }] };
-				const stmt = getDB().prepare(`SELECT verse, text FROM scriptures WHERE book=? AND chapter=? AND verse BETWEEN ? AND ? ORDER BY verse;`).bind(parsed.book, parsed.chapter, parsed.verseStart, parsed.verseEnd);
-				const verses = (await stmt.all()).results || [];
-				if (!verses.length) return { content: [{ type: "text", text: "No verses found." }] };
-				const citation = `${parsed.book} ${parsed.chapter}:${parsed.verseStart}${parsed.verseEnd!==parsed.verseStart?'-'+parsed.verseEnd:''}`;
-				return { content: [{ type: "text", text: citation }, { type: "text", text: verses.map((v:any)=>`${v.verse}. ${v.text}`).join('\n') }] };
-			});
-
-
-			// Unified conference talks tool
-			server.tool("talks", {
-				id: z.number().int().positive().optional(),
-				query: z.string().optional(),
-				speaker: z.string().optional(),
-				conference: z.string().optional(),
-				title: z.string().optional(),
-				list: z.enum(["conferences","speakers"]).optional(),
-				limit: z.number().min(1).max(100).optional(),
-				offset: z.number().int().min(0).optional(),
-				full: z.boolean().optional()
-			}, async ({ id, query, speaker, conference, title, list, limit, offset, full }) => {
-				const lim = limit ?? 10;
-				const off = offset ?? 0;
-				const confPatterns = (raw?:string): string[] => {
-					if (!raw) return [];
-					const base = raw.trim();
-					const patterns = new Set<string>();
-					patterns.add(base);
-					// If user gives YYYY-MM, derive Month Year (English months assumed)
-					const ym = base.match(/^(\d{4})[-/](\d{2})$/);
-					if (ym) {
-						const monthNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
-						const mName = monthNames[parseInt(ym[2],10)-1];
-						patterns.add(`${mName} ${ym[1]}`);
-					}
-					// Add 'General Conference' suffix variants
-					for (const p of Array.from(patterns)) {
-						patterns.add(`${p} General Conference`);
-					}
-					return Array.from(patterns);
-				};
-				const speakerPatterns = (raw?:string): string[] => {
-					if (!raw) return [];
-					let base = raw.trim();
-					base = base.replace(/^(Elder|President|Brother|Sister)\s+/i, "");
-					const variants = new Set<string>();
-					variants.add(base);
-					variants.add(base.replace(/\./g, ""));
-					variants.add(`Elder ${base}`);
-					variants.add(`President ${base}`);
-					const parts = base.split(/\s+/);
-					if (parts.length > 1) variants.add(parts[parts.length-1]);
-					return Array.from(variants);
-				};
-				// Listing modes
-				if (list === "conferences") {
-					const meta = await getDB().prepare(`SELECT MIN(substr(date,1,7)) AS first_month, MAX(substr(date,1,7)) AS last_month, COUNT(DISTINCT conference) AS total FROM conference_talks;`).first();
-					const res = await getDB().prepare(`SELECT conference, substr(MIN(date),1,7) AS month, COUNT(*) AS talks FROM conference_talks GROUP BY conference ORDER BY MIN(date) DESC LIMIT ? OFFSET ?;`).bind(lim, off).all();
-					const rows = res.results || [];
-					return { content: [
-						{ type:"text", text:`Conference range: ${(meta as any).first_month} .. ${(meta as any).last_month} (total ${(meta as any).total} conferences). Showing ${rows.length} starting at offset ${off}. Use limit & offset to page older conferences.` },
-						...rows.map((r:any)=>({ type:"text", text:`${r.conference} (${r.month}) – ${r.talks} talks` }))
-					] } as any;
-				}
-				if (list === "speakers") {
-					let sql = `SELECT speaker, COUNT(*) AS talks FROM conference_talks`;
-					const binds:any[] = [];
-					if (conference) { sql += ` WHERE conference LIKE ?`; binds.push(`%${conference.trim()}%`); }
-					sql += ` GROUP BY speaker ORDER BY talks DESC, speaker ASC LIMIT ? OFFSET ?;`;
-					binds.push(lim, off);
-					const metaSql = `SELECT COUNT(DISTINCT speaker) AS total FROM conference_talks${conference?" WHERE conference LIKE ?":""}`;
-					const metaRow = await getDB().prepare(metaSql).bind(...(conference? [`%${conference.trim()}%`]:[])).first();
-					const res = await getDB().prepare(sql).bind(...binds).all();
-					const rows = res.results || [];
-					return { content: [
-						{ type:"text", text:`Speakers total: ${(metaRow as any).total}${conference?` (filtered by '${conference}')`:''}. Showing ${rows.length} starting at offset ${off}.` },
-						...rows.map((r:any)=>({ type:"text", text:`${r.speaker} (${r.talks})` }))
-					] } as any;
-				}
-				// Get by id
-				if (id) {
-					const row = await getDB().prepare(`SELECT id, speaker, title, conference, date, ${full?"full_text":"substr(full_text,1,1500) AS excerpt"} FROM conference_talks WHERE id=?;`).bind(id).first();
-					if (!row) return { content: [{ type:"text", text:"Talk not found." }] } as any;
-					const body = full ? (row as any).full_text : (row as any).excerpt;
-					return { content: [
-						{ type:"text", text:`${(row as any).speaker} – ${(row as any).title} (${(row as any).conference}, ${(row as any).date})${full?" (full)":""}` },
-						{ type:"text", text: body }
-					] } as any;
-				}
-				// Search (full-text) if query provided
-				if (query) {
-					let filter = ""; const binds:any[] = [];
-					if (speaker) {
-						const sp = speakerPatterns(speaker);
-						if (sp.length) {
-							filter += " AND (" + sp.map(()=>"speaker LIKE ?").join(" OR ") + ")";
-							for (const v of sp) binds.push(`%${v}%`);
-						}
-					}
-					if (conference) { filter += " AND conference LIKE ?"; binds.push(`%${conference.trim()}%`); }
-					const sanitized = query.toLowerCase().replace(/[%_]/g, "");
-					const like = `%${sanitized}%`;
-					const stmt = getDB().prepare(`SELECT id, speaker, title, conference, date FROM conference_talks WHERE lower(full_text) LIKE ? ${filter} ORDER BY date DESC LIMIT ?;`).bind(like, ...binds, lim);
-					const rows = (await stmt.all()).results || [];
-					if (!rows.length) return { content: [{ type:"text", text:"No results. Try adjusting speaker/conference or list available conferences with talks{list:'conferences'}." }] } as any;
-					if (rows.length === 1) {
-						const fullRow = await getDB().prepare(`SELECT id, speaker, title, conference, date, full_text FROM conference_talks WHERE id=?;`).bind(rows[0].id).first();
-						return { content: [
-							{ type:"text", text:`${(fullRow as any).speaker} – ${(fullRow as any).title} (${(fullRow as any).conference}, ${(fullRow as any).date}) (full)` },
-							{ type:"text", text:(fullRow as any).full_text }
-						] } as any;
-					}
-					return { content: rows.map((r:any)=>({ type:"text", text:`#${r.id} ${r.speaker} – ${r.title} (${r.conference} ${r.date})` })) } as any;
-				}
-				// Structured filter (no query)
-				if (speaker || conference || title) {
-					// Attempt multiple conference pattern variants until match.
-					let rows:any[] = [];
-					const confsToTry = conference ? confPatterns(conference) : [undefined];
-					const speakerVars = speakerPatterns(speaker);
-					for (const c of confsToTry) {
-						let sql = `SELECT id, speaker, title, conference, date FROM conference_talks WHERE 1=1`;
-						const binds:any[] = [];
-						if (speaker && speakerVars.length) {
-							sql += " AND (" + speakerVars.map(()=>"speaker LIKE ?").join(" OR ") + ")";
-							for (const v of speakerVars) binds.push(`%${v}%`);
-						}
-						if (c) { sql += ` AND conference LIKE ?`; binds.push(`%${c}%`); }
-						if (title) { sql += ` AND lower(title) LIKE ?`; binds.push(`%${title.toLowerCase()}%`); }
-						sql += ` ORDER BY date LIMIT ?`; binds.push(lim);
-						const res = await getDB().prepare(sql).bind(...binds).all();
-						rows = res.results || [];
-						if (rows.length) break;
-					}
-					if (!rows.length) return { content: [{ type:"text", text:"No talks matched filters (after trying pattern variants). Consider adding query for content search or list conferences." }] } as any;
-					if (rows.length === 1) {
-						const idSingle = rows[0].id;
-						const row = await getDB().prepare(`SELECT id, speaker, title, conference, date, full_text FROM conference_talks WHERE id=?;`).bind(idSingle).first();
-						if (!row) return { content: [{ type:"text", text:"Unexpected: talk disappeared." }] } as any;
-						return { content: [
-							{ type:"text", text:`${(row as any).speaker} – ${(row as any).title} (${(row as any).conference}, ${(row as any).date}) (full)` },
-							{ type:"text", text:(row as any).full_text }
-						] } as any;
-					}
-					return { content: rows.map((r:any)=>({ type:"text", text:`#${r.id} ${r.date} – ${r.speaker}: ${r.title} (${r.conference})` })) } as any;
-				}
-				return { content: [{ type:"text", text:"Specify id to fetch a talk, query for full-text search, filters (speaker/conference/title), or list ('conferences'|'speakers')." }] } as any;
-			});
-
-			// (Deprecated conference tools removed; replaced entirely by talks tool.)
-
 			MyMCP.sharedServer = server;
 		}
 		this.server = MyMCP.sharedServer!;
@@ -205,6 +35,61 @@ export class MyMCP extends McpAgent<EnvWithDB> {
 
 	// Abstract method required by base; registration handled in constructor.
 	async init(): Promise<void> { /* no-op */ }
+}
+
+// Lazy local sqlite initialization (only in Bun local dev)
+async function ensureLocalDB() {
+	if (MyMCP.db) return;
+	// Try Node environment first (better-sqlite3)
+	try {
+		// eslint-disable-next-line @typescript-eslint/no-var-requires
+		const BetterSqlite = require('better-sqlite3');
+		const dbFile = 'gospel-library.db';
+		const native = new BetterSqlite(dbFile, { readonly: true });
+		MyMCP.db = {
+			prepare(sql: string) {
+				return {
+					bind(...args: any[]) {
+						const stmt = native.prepare(sql);
+						if (args.length) stmt.bind(...args);
+						return {
+							async all() { return { results: stmt.all() }; },
+							async first() { return stmt.get(); },
+							async run() { return { success: false }; },
+							async raw() { return []; }
+						};
+					}
+				};
+			}
+		} as any;
+		return;
+	} catch (_) { /* ignore and try Bun */ }
+	// Bun fallback
+	try {
+		// @ts-ignore Bun global
+		if (typeof Bun !== 'undefined') {
+			// @ts-ignore
+			const { Database } = await import('bun:sqlite');
+			const sqlite = new Database('gospel-library.db', { readOnly: true });
+			MyMCP.db = {
+				prepare(sql: string) {
+					return {
+						bind(...args: any[]) {
+							const stmt = args.length ? sqlite.query(sql).bind(...args) : sqlite.query(sql);
+							return {
+								async all() { return { results: stmt.all() }; },
+								async first() { return stmt.get(); },
+								async run() { return { success: false }; },
+								async raw() { return []; }
+							};
+						}
+					};
+				}
+			} as any;
+		}
+	} catch (e) {
+		console.warn('Failed local sqlite initialization (Node & Bun)', e);
+	}
 }
 
 export default {
@@ -219,3 +104,16 @@ export default {
 		return new Response("Not found", { status: 404 });
 	}
 };
+
+// Helper for Node wrapper to ensure shared server is initialized (and local DB attempted)
+export async function getLocalServer() {
+	if (!MyMCP.sharedServer) {
+		// Create a dummy durable object state/env for initialization context.
+		// @ts-ignore minimal stub objects; server logic only relies on constructor side-effects.
+		new MyMCP({} , { DB: undefined } as any);
+	}
+	if (!MyMCP.db) {
+		await ensureLocalDB();
+	}
+	return MyMCP.sharedServer!;
+}

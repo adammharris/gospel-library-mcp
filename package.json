@@ -2,6 +2,7 @@
 	"name": "gospel-library-mcp",
 	"version": "0.0.0",
 	"private": true,
+	"type": "module",
 	"scripts": {
 		"deploy": "wrangler deploy",
 		"dev": "wrangler dev",
@@ -9,15 +10,21 @@
 		"lint:fix": "biome lint --fix",
 		"start": "wrangler dev",
 		"cf-typegen": "wrangler types",
-		"type-check": "tsc --noEmit"
+		"type-check": "tsc --noEmit",
+		"build": "tsc -p tsconfig.build.json",
+		"serve:node": "node dist/node-server.js",
+		"serve:stdio": "node dist/stdio-server.js"
 	},
 	"dependencies": {
 		"@modelcontextprotocol/sdk": "1.17.1",
 		"agents": "^0.0.109",
+		"better-sqlite3": "^9.4.5",
+		"sql.js": "^1.11.0",
 		"zod": "^3.25.67"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.1.3",
+		"@types/node": "^20.19.10",
 		"typescript": "5.8.3",
 		"wrangler": "^4.27.0"
 	}
