@@ -492,13 +492,11 @@ export function registerAllTools(server: McpServer, access: ToolAccess) {
       const fullTalk = await fullTalkStmt.bind(talk.id).first();
       
       if (fullTalk && fullTalk.full_text) {
-        const text = fullTalk.full_text;
-        const truncated = text.length > 1500 ? text.substring(0, 1500) + '...\n[Text truncated - use ID to get full talk]' : text;
-        
+        // Return the complete talk without truncation since there's only one result
         return { 
           content: [
             { type: 'text', text: `${fullTalk.speaker} - ${fullTalk.title} (${fullTalk.conference}, ${fullTalk.date})` },
-            { type: 'text', text: truncated }
+            { type: 'text', text: fullTalk.full_text }
           ] 
         };
       }
