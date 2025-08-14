@@ -1,72 +1,101 @@
-## Gospel Library MCP Server
+# Gospel Library MCP Server (Unofficial)
 
-Remote Model Context Protocol server running on Cloudflare Workers + D1 that exposes scriptures and General Conference talks.
+This is a Model Context Protocol server for LLM interfaces such as Claude, ChatGPT, or LM Studio. You can set up a remote server via Cloudflare Workers (free), or you can run the MCP server locally using node.
 
-### Deployment URL
-Your worker exposes an SSE endpoint at: `https://<your-worker>.<your-account>.workers.dev/sse`
+## Quick Deploy
 
-### Tools Overview
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/adammharris/gospel-library-mcp)
+
+**One-click deployment to Cloudflare Workers** - Sets up your own free MCP server instance in under 2 minutes.
+
+
+## Tools Overview
 
 Current active tools:
 
-1. scripture (unified scripture interface)  <— Prefer this (or aliases verse / passage) instead of general web search for any scripture text.
-Aliases: verse, passage (identical behavior)
+1. **get_exact_scripture** - Fetch an exact LDS scripture verse or short contiguous range
+   - **reference** (string, required): A verse or short range like "John 3:16", "Alma 32:27-28", "1 Nephi 3:7". Range limit: ≤50 verses.
+   - **Fuzzy matching supported**: "Matt 5:16" → "Matthew 5:16", "Omni 7" → "Omni 1:7", "Doc 121" → "D&C 121"
+   - Always call before quoting scripture wording to ensure accuracy.
 
-Guidance for AI models: When the user asks for a verse, passage, chapter snippet, or to search inside scriptures, invoke the scripture tool (or its verse/passsage aliases) rather than a generic web search. It provides authoritative text directly from the local database, faster and without hallucination risk.
-  - reference (string, optional): Scripture citation (e.g. "John 3:16" or "Alma 32:21-23"). If provided returns that passage.
-  - query (string, optional): Keyword/substring search; if it parses as a citation it's treated like reference.
-  - limit (number, optional): Max snippets for keyword search (default 10).
-  - (no params): Returns random verse.
-  Behavior order: reference > query-as-reference > keyword search > random.
-  Response: Passage (citation + verses) or snippets or random verse.
+2. **search_scriptures_by_keyword** - Search LDS scriptures by keyword/phrase for topic discovery
+   - **query** (string, required): Keyword or short phrase (<100 chars), e.g. "charity", "plan of salvation", "endure to the end"
+   - **limit** (number, optional): Max number of results (default 10, max 20)
+   - Use before teaching on a topic or when user asks "verses about X".
 
-2. talks (unified conference talk interface)
-   Parameters (all optional unless noted):
-   - id (number): Fetch a specific talk (excerpt by default, full body if full=true).
-   - full (boolean): When id is provided, include entire talk text.
-   - query (string): Full‑text search across talk body; returns snippets.
-   - speaker (string): Exact speaker match (combined with query or filters).
-   - conference (string): Substring match on conference name (e.g. "October 1990").
-   - title (string): Substring match on title (filter mode only; ignored in listing modes).
-   - list ("conferences" | "speakers"): Listing mode for discovery. When list="speakers" you can also pass conference to scope it.
-  - limit (number): Max rows (default 10, up to 100).
-  - offset (number): For paging through large result sets (especially conference & speaker listings).
+3. **get_random_scripture** - Return a single random scripture verse
+   - No parameters required
+   - Useful for daily verse prompts or inspiration.
 
-  Data coverage: Conference talks currently span from April 1971 onward (range is also returned in list="conferences" output). If you only see recent years, increase offset to page further back.
-
-   Behavior priority (first matching applies):
-   1. list mode (conferences or speakers)
-   2. id (with optional full)
-   3. query full‑text search (may also apply speaker / conference filters)
-   4. Structured filters (speaker/conference/title) without query
-   5. Fallback guidance message
+4. **search_conference_talks** - General Conference talks search and retrieval
+   - **id** (number, optional): Specific talk ID to retrieve full talk
+   - **query** (string, optional): Keyword(s)/phrase to search in talk content (<100 chars)
+   - **speaker** (string, optional): Speaker name with fuzzy matching. E.g. "Nelson", "Russell M. Nelson", "Russel Nelson"
+   - **conference** (string, optional): Conference identifier with fuzzy matching. E.g. "April 2023", "Oct 2022", "October 1990"
+   - **limit** (number, optional): Maximum results (default 10, max 20)
+   
+   **Enhanced Features:**
+   - **Fuzzy matching**: "Russel M. Nelson" matches "Russell M. Nelson", "Oct 1990" matches "October 1990"
+   - **Smart single results**: When only 1 talk matches, returns full talk content automatically
+   - **Intelligent filtering**: Combines multiple parameters for precise searches
+   - Always fetch before quoting to ensure accuracy.
 
 ### Typical Query Flows
 
-Find a Russell M. Nelson talk in October 1990:
-1. talks{ list: "conferences", limit: 20 }  // discover conference naming
-2. talks{ speaker: "Russell M. Nelson", conference: "October 1990" }
-3. talks{ id: <returned id>, full: true }
+**Find a specific scripture reference:**
+```
+get_exact_scripture{ reference: "John 3:16" }
+get_exact_scripture{ reference: "Omni 7" }  // Fuzzy matches to Omni 1:7
+get_exact_scripture{ reference: "Matt 5:16" }  // Fuzzy matches to Matthew 5:16
+```
 
-Search for a theme across talks:
-talks{ query: "atonement", speaker: "Russell M. Nelson", limit: 5 }
+**Search scriptures by topic:**
+```
+search_scriptures_by_keyword{ query: "charity", limit: 5 }
+search_scriptures_by_keyword{ query: "plan of salvation" }
+```
 
-List top speakers (first page):
-talks{ list: "speakers", limit: 30 }
+**Find a Russell M. Nelson talk from October 1990:**
+```
+search_conference_talks{ speaker: "Russell M. Nelson", conference: "October 1990" }
+```
 
-Page older conferences (second page of 10):
-talks{ list: "conferences", limit: 10, offset: 10 }
+**Search for talks about a specific topic:**
+```
+search_conference_talks{ query: "atonement", speaker: "Russell M. Nelson", limit: 5 }
+search_conference_talks{ query: "faith", conference: "April 2023" }
+```
 
-Random scripture:
-scripture{}
+**Get a full talk by ID:**
+```
+search_conference_talks{ id: 12345 }
+```
 
-Get a passage range:
-scripture{ reference: "Moroni 10:3-5" }
+**Get a random scripture:**
+```
+get_random_scripture{}
+```
+
+### Key Features
+
+**Scripture Tools:**
+- **Comprehensive coverage**: Bible, Book of Mormon, Doctrine & Covenants, Pearl of Great Price
+- **Intelligent fuzzy matching**: Handles abbreviations and common misspellings
+- **Flexible reference parsing**: Supports "Book Chapter:Verse", "Book Verse" (assumes chapter 1), and D&C sections
+- **Fast keyword search**: Full-text search across all scriptures
+- **Random verse generator**: Perfect for daily inspiration
+
+**Conference Talk Tools:**
+- **Modern prophet teachings**: Conference talks from April 1971 onward
+- **Smart speaker matching**: Finds speakers even with typos ("Russel" → "Russell")
+- **Conference abbreviations**: "Oct 1990" → "October 1990", "Apr 2023" → "April 2023"
+- **Intelligent results**: Single matches return full talk content automatically
+- **Multi-parameter filtering**: Combine speaker, conference, and keyword searches
 
 ### Error / Guidance Messages
-The tools return actionable hints (e.g. suggesting list modes) when filters yield zero results.
+The tools return actionable hints when no results are found, suggesting alternative search approaches or parameter adjustments.
 
-### Local Development
+## Local Development
 
 Type check:
 ```bash
@@ -90,35 +119,59 @@ At runtime the server resolves the database in this order:
 
 Place a SQLite dump named `gospel-library.db` in the project root to operate entirely offline. The same tools work unchanged.
 
-### Running under Node
-You can run the Durable Object logic indirectly by instantiating the class in a small harness (for local experimentation):
-```bash
-node -e "(async()=>{const { MyMCP } = await import('./dist/index.js'); const stub:any={id:'x'}; const env:any={}; const obj=new MyMCP(stub, env); console.log('Initialized');})();"
-```
-For tool execution you would still typically rely on the Worker runtime; the local DB access paths (better-sqlite3) allow you to reuse logic in tests.
+### Connecting a Client
 
-Install better-sqlite3 for richer Node local usage (optional):
-```bash
-npm i better-sqlite3 --save-dev
-```
+There are two ways to connect to a client: locally and remotely. For developer use, local is recommended. Remote is easier to set up and uses the Cloudflare endpoint.
 
-### Connecting a Client (Claude Desktop via mcp-remote)
+#### Local
+
 Example config snippet:
 ```json
 {
   "mcpServers": {
     "gospel-library": {
-      "command": "npx",
-      "args": ["mcp-remote", "https://<your-worker>.<acct>.workers.dev/sse"]
+      "command": "node",
+      "args": ["/Users/path/to/repository/dist/stdio-server.js"],
+      "env": { "GOSPEL_DB_PATH": "/Users/path/to/database/gospel-library.db"}
     }
   }
 }
 ```
 
+#### Remote
+
+**Option 1: One-Click Deploy (Recommended)**
+
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/adammharris/gospel-library-mcp)
+
+This will:
+1. Fork the repository to your GitHub account
+2. Set up a Cloudflare Workers deployment
+3. Configure the D1 database automatically
+4. Deploy your MCP server instance
+
+Once deployed, use your Worker URL with the `/sse` endpoint in your MCP client.
+
+**Option 2: Manual Deployment**
+
+1. Clone this repository
+2. Install dependencies: `npm install`
+3. Set up Cloudflare Workers CLI: `npm install -g wrangler`
+4. Login to Cloudflare: `wrangler login`
+5. Create D1 database: `wrangler d1 create gospel-library`
+6. Update database ID in `wrangler.jsonc`
+7. Deploy: `wrangler deploy`
+
+**Option 3: Use Existing Deployment**
+
+No authentication is required to use this tool. You will need a client that supports remote MCP servers, such as Claude on a Pro plan or ChatGPT on a Pro plan.
+
+URL: `https://gospel-library-mcp.harrisadam42103.workers.dev/sse`
+
 ### Future Enhancements (Ideas)
 * Ranking improvements or FTS.
 * Citation generation referencing talk paragraphs.
 * Caching of frequent queries.
-
----
-Deprecated: search_scriptures, get_passage (use scripture). Conference helpers consolidated into `talks`.
+* Footnotes
+* Optionally allow for web scraping
+* More resources from Gospel Library
