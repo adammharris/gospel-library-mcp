@@ -366,17 +366,22 @@ export function registerAllTools(server: McpServer, access: ToolAccess) {
       
       let bestSpeakerMatch = null;
       let bestScore = 0;
+      // The same person appears under several distinct speaker strings over time
+      // ("Elder Russell M. Nelson", "President Russell M. Nelson", NBSP variants),
+      // so collect every substring match rather than stopping at the first one.
+      const substringSpeakerMatches: string[] = [];
       
       const normalizedInput = normalizeNameForMatching(speaker);
       
       for (const dbSpeaker of allSpeakers) {
         const normalizedDbSpeaker = normalizeNameForMatching(dbSpeaker);
+        // Some rows have a blank speaker; "" is a substring of everything, so skip it.
+        if (!normalizedDbSpeaker) continue;
         
         // Check for exact substring matches first
         if (normalizedDbSpeaker.includes(normalizedInput) || normalizedInput.includes(normalizedDbSpeaker)) {
-          bestSpeakerMatch = dbSpeaker;
-          bestScore = 1.0;
-          break;
+          substringSpeakerMatches.push(dbSpeaker);
+          continue;
         }
         
         // Check fuzzy similarity with a lower threshold for names
@@ -397,9 +402,16 @@ export function registerAllTools(server: McpServer, access: ToolAccess) {
         }
       }
       
-      if (bestSpeakerMatch && bestScore > 0.4) {
-        sql += ` AND speaker = ?`;
-        binds.push(bestSpeakerMatch);
+      if (substringSpeakerMatches.length) {
+        sql += ` AND speaker IN (${substringSpeakerMatches.map(() => '?').join(',')})`;
+        binds.push(...substringSpeakerMatches);
+        speakerMatched = true;
+      } else if (bestSpeakerMatch && bestScore > 0.4) {
+        // Include every stored variant of the fuzzy-best name (title/NBSP differences).
+        const bestNormalized = normalizeNameForMatching(bestSpeakerMatch);
+        const variants = allSpeakers.filter((s: string) => normalizeNameForMatching(s) === bestNormalized);
+        sql += ` AND speaker IN (${variants.map(() => '?').join(',')})`;
+        binds.push(...variants);
         speakerMatched = true;
       }
       
@@ -421,6 +433,7 @@ export function registerAllTools(server: McpServer, access: ToolAccess) {
       
       let bestConferenceMatch = null;
       let bestScore = 0;
+      const substringConferenceMatches: string[] = [];
       
       const normalizedInput = conference.toLowerCase()
         .replace(/\b(oct|october)\b/g, 'october')
@@ -434,9 +447,8 @@ export function registerAllTools(server: McpServer, access: ToolAccess) {
         
         // Check for exact substring matches first
         if (normalizedDbConference.includes(normalizedInput) || normalizedInput.includes(normalizedDbConference)) {
-          bestConferenceMatch = dbConference;
-          bestScore = 1.0;
-          break;
+          substringConferenceMatches.push(dbConference);
+          continue;
         }
         
         // Check fuzzy similarity 
@@ -452,7 +464,11 @@ export function registerAllTools(server: McpServer, access: ToolAccess) {
         }
       }
       
-      if (bestConferenceMatch && bestScore > 0.6) {
+      if (substringConferenceMatches.length) {
+        sql += ` AND conference IN (${substringConferenceMatches.map(() => '?').join(',')})`;
+        binds.push(...substringConferenceMatches);
+        conferenceMatched = true;
+      } else if (bestConferenceMatch && bestScore > 0.6) {
         sql += ` AND conference = ?`;
         binds.push(bestConferenceMatch);
         conferenceMatched = true;
